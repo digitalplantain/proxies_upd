@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROXY_LIST_URL: "https://raw.githubusercontent.com/digitalplantain/proxies_upd/refs/heads/main/sub.txt"
+  PROXY_LIST_URL: "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt"
   GIST_FILENAME: "working_proxies.txt"
 
 jobs:
