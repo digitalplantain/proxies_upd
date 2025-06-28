@@ -11,7 +11,7 @@ env:
   DEBUG: "true" 
   
   # URL со списком прокси для проверки. Замените на свой!
-  PROXY_LIST_URL: "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_base64.txt"
+  PROXY_LIST_URL: "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt"
   # Имя файла, который будет создан в Gist
   GIST_FILENAME: "working_proxies.txt"
 
