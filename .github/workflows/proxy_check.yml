@@ -51,4 +51,4 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_FILENAME: ${{ env.GIST_FILENAME }}
-        run: python proxy_checker.py proxies.txt
+        run: python proxy_checker.py proxies.txt --debug
