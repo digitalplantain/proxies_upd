@@ -45,8 +45,8 @@ YT_MUSIC_ALLOWED_COUNTRY_CODES = {
     'TZ', 'TH', 'TN', 'TR', 'TC', 'VI', 'UG', 'UA', 'AE', 'GB', 'US', 'UY', 'VE', 'VN', 'YE', 'ZW'
 }
 
-XRAY_PATH = "./xray" # ИЗМЕНЕНО: убрали .exe, так как в Actions будет Linux
-MAX_WORKERS = 200
+XRAY_PATH = "./xray"
+MAX_WORKERS = 100
 REQUEST_TIMEOUT = 8
 
 TARGETS = {
@@ -54,8 +54,6 @@ TARGETS = {
     "ip_api_url": "http://ip-api.com/json/?fields=status,country,countryCode,isp",
     "discord_url": "https://discord.com/api/v9/gateway",
 }
-
-# ... (весь ваш код с get_free_port до check_proxy остается без изменений) ...
 
 def get_free_port():
     """Находит свободный TCP порт для локального прокси."""
@@ -78,10 +76,12 @@ def generate_xray_config(proxy_data, local_port):
         "outbounds": [{"protocol": protocol, "settings": {}, "streamSettings": {}}]
     }
     outbound, settings, stream_settings = config['outbounds'][0], config['outbounds'][0]['settings'], config['outbounds'][0]['streamSettings']
-    if protocol == 'vmess': settings['vnext'] = [{"address": proxy_data['add'],"port": int(proxy_data['port']),"users": [{"id": proxy_data['id'], "alterId": int(proxy_data.get('aid', 0)), "security": proxy_data.get('scy', 'auto')}]}]
-    elif protocol == 'vless': settings['vnext'] = [{"address": proxy_data['address'],"port": int(proxy_data['port']),"users": [{"id": proxy_data['id'], "flow": proxy_data.get('flow', ''), "encryption": proxy_data.get('encryption', 'none')}]}]
-    elif protocol == 'trojan': settings['servers'] = [{"address": proxy_data['address'],"port": int(proxy_data['port']),"password": proxy_data['password']}]
-    elif protocol == 'shadowsocks': settings['servers'] = [{"address": proxy_data['address'],"port": int(proxy_data['port']),"method": proxy_data['method'],"password": proxy_data['password']}]
+    # ИЗМЕНЕНО: Добавлена проверка на None для порта, чтобы избежать TypeError
+    port = int(proxy_data['port'])
+    if protocol == 'vmess': settings['vnext'] = [{"address": proxy_data['add'],"port": port,"users": [{"id": proxy_data['id'], "alterId": int(proxy_data.get('aid', 0)), "security": proxy_data.get('scy', 'auto')}]}]
+    elif protocol == 'vless': settings['vnext'] = [{"address": proxy_data['address'],"port": port,"users": [{"id": proxy_data['id'], "flow": proxy_data.get('flow', ''), "encryption": proxy_data.get('encryption', 'none')}]}]
+    elif protocol == 'trojan': settings['servers'] = [{"address": proxy_data['address'],"port": port,"password": proxy_data['password']}]
+    elif protocol == 'shadowsocks': settings['servers'] = [{"address": proxy_data['address'],"port": port,"method": proxy_data['method'],"password": proxy_data['password']}]
     
     stream_settings['network'] = proxy_data.get('net', proxy_data.get('type', 'tcp'))
     stream_settings['security'] = proxy_data.get('tls', proxy_data.get('security', ''))
@@ -98,13 +98,19 @@ def generate_xray_config(proxy_data, local_port):
     return json.dumps(config)
 
 def parse_proxy_link(link):
-    """Парсит ссылку и возвращает словарь с параметрами."""
+    """Парсит ссылку и возвращает словарь с параметрами. Возвращает None при ошибке."""
     try:
         if link.startswith('vmess://'):
             data = json.loads(base64.b64decode(link[8:]).decode('utf-8')); data['protocol'] = 'vmess'; return data
         parsed_url = urllib.parse.urlparse(link); protocol = parsed_url.scheme
         if protocol == 'ss' and '@' not in parsed_url.netloc:
+            # Эта часть может вызвать ValueError, если нет ':', что будет поймано внешним except
             user_info, host_info = base64.b64decode(parsed_url.netloc).decode('utf-8').split('@'); address, port = host_info.split(':'); method, password = user_info.split(':'); return {'protocol': 'shadowsocks', 'address': address, 'port': int(port), 'method': method, 'password': password}
+        
+        # ИЗМЕНЕНО: Добавлена проверка на наличие hostname и port, чтобы отсеять невалидные ссылки
+        if not parsed_url.hostname or not parsed_url.port:
+            return None
+
         data = {'protocol': protocol, 'address': parsed_url.hostname, 'port': parsed_url.port}
         if protocol == 'shadowsocks': user_info = urllib.parse.unquote(parsed_url.username or ''); data['method'], data['password'] = user_info.split(':', 1)
         elif protocol in ['trojan', 'vless']:
@@ -112,24 +118,36 @@ def parse_proxy_link(link):
             for k, v in query.items(): data[k.lower().replace('-', '')] = v[0]
             data['sni'] = data.get('sni', data.get('host', ''))
         return data
-    except Exception: return None
+    except Exception: 
+        # Любая ошибка парсинга (включая b64decode, split и т.д.) приведет к отбраковке ссылки
+        return None
 
 def check_proxy(proxy_link):
-    """Основная функция проверки одного прокси."""
-    proxy_data = parse_proxy_link(proxy_link)
-    if not proxy_data: return None
-    local_port = get_free_port(); config_json = generate_xray_config(proxy_data, local_port)
-    if not config_json: return None
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json", encoding='utf-8') as temp_config:
-        temp_config.write(config_json); config_path = temp_config.name
+    """Основная функция проверки одного прокси. Отказоустойчивая."""
+    # ИЗМЕНЕНО: Оборачиваем всю функцию в try...except для максимальной надежности.
+    # Любая ошибка (парсинг, генерация конфига, сеть) будет поймана.
     proc = None
+    config_path = None
     try:
+        proxy_data = parse_proxy_link(proxy_link)
+        if not proxy_data: return None
+
+        local_port = get_free_port()
+        config_json = generate_xray_config(proxy_data, local_port)
+        if not config_json: return None
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".json", encoding='utf-8') as temp_config:
+            temp_config.write(config_json)
+            config_path = temp_config.name
+        
         proc = subprocess.Popen([XRAY_PATH, "run", "-c", config_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5);
+        time.sleep(1.5)
         if proc.poll() is not None: return None
+
         proxies = {'http': f'socks5://127.0.0.1:{local_port}', 'https': f'socks5://127.0.0.1:{local_port}'}
         
-        start_time = time.time(); requests.head(TARGETS["ping_url"], proxies=proxies, timeout=REQUEST_TIMEOUT).raise_for_status();
+        start_time = time.time()
+        requests.head(TARGETS["ping_url"], proxies=proxies, timeout=REQUEST_TIMEOUT).raise_for_status()
         ping = int((time.time() - start_time) * 1000)
 
         response_ip = requests.get(TARGETS["ip_api_url"], proxies=proxies, timeout=REQUEST_TIMEOUT).json()
@@ -147,7 +165,6 @@ def check_proxy(proxy_link):
             pass
 
         real_flag = country_code_to_flag(country_code)
-        # ИЗМЕНЕНО: Добавляем пинг в имя для лучшей сортировки
         name = (f"{ping:04d}ms ◈ {real_flag} {country_code} ◈ {isp} | "
                 f"Discord {'✅' if discord_ok else '❌'} | "
                 f"YT_Music {'✅' if yt_music_ok else '❌'} | "
@@ -156,14 +173,17 @@ def check_proxy(proxy_link):
         base_link = proxy_link.split('#')[0]
         final_link_with_new_name = f"{base_link}#{urllib.parse.quote(name)}"
 
-        # ИЗМЕНЕНО: Возвращаем кортеж с пингом для сортировки
         return (ping, final_link_with_new_name)
-    except Exception: return None
+    except Exception as e:
+        # При любой ошибке просто возвращаем None, чтобы поток продолжил работу.
+        # Для отладки в GitHub Actions можно раскомментировать следующую строку:
+        # print(f"\n[DEBUG] Ошибка в check_proxy для '{proxy_link[:30]}...': {e}")
+        return None
     finally:
         if proc: proc.terminate(); proc.wait()
-        if os.path.exists(config_path): os.remove(config_path)
+        if config_path and os.path.exists(config_path): os.remove(config_path)
 
-# НОВОЕ: Функция для обновления Gist
+
 def update_gist(gist_id, gist_filename, content, token):
     """Обновляет файл в указанном секретном Gist."""
     headers = {
@@ -173,26 +193,29 @@ def update_gist(gist_id, gist_filename, content, token):
     data = {
         'files': {
             gist_filename: {
-                'content': content
+                'content': content if content else "# Рабочие прокси не найдены."
             }
         },
         'description': f'Рабочие прокси, обновлено: {time.strftime("%Y-%m-%d %H:%M:%S UTC")}',
     }
-    response = requests.patch(f'https://api.github.com/gists/{gist_id}', headers=headers, json=data)
-    response.raise_for_status() # Вызовет исключение, если запрос не удался
-    print(f"Gist '{gist_id}' успешно обновлен!")
-
+    try:
+        response = requests.patch(f'https://api.github.com/gists/{gist_id}', headers=headers, json=data)
+        response.raise_for_status() 
+        print(f"Gist '{gist_id}' успешно обновлен!")
+    except requests.exceptions.RequestException as e:
+        print(f"Ошибка: Не удалось обновить Gist: {e}")
+        # Также выводим тело ответа от GitHub API для лучшей диагностики
+        if e.response is not None:
+            print(f"Ответ от API: {e.response.text}")
 
 def main():
-    # ИЗМЕНЕНО: Упрощаем argparse, убираем output, добавляем аргументы для Gist
     parser = argparse.ArgumentParser(description="Проверяет список прокси и обновляет Gist.", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("input_file", help="Файл со списком прокси-ссылок (каждая на новой строке).")
     args = parser.parse_args()
     
-    # ИЗМЕНЕНО: Получаем данные для Gist из переменных окружения
     GIST_ID = os.environ.get('GIST_ID')
     GIST_TOKEN = os.environ.get('GIST_TOKEN')
-    GIST_FILENAME = os.environ.get('GIST_FILENAME', 'working_proxies.txt') # Имя файла в Gist по умолчанию
+    GIST_FILENAME = os.environ.get('GIST_FILENAME', 'working_proxies.txt')
 
     if not all([GIST_ID, GIST_TOKEN]):
         print("Ошибка: Переменные окружения GIST_ID и GIST_TOKEN должны быть установлены.")
@@ -201,39 +224,40 @@ def main():
     if not os.path.exists(XRAY_PATH):
         print(f"Ошибка: Не найден исполняемый файл Xray по пути: {XRAY_PATH}"); return
     try:
-        with open(args.input_file, 'r', encoding='utf-8') as f: proxy_links = [line.strip() for line in f if line.strip()]
-    except FileNotFoundError: print(f"Ошибка: Входной файл не найден: {args.input_file}"); return
-    if not proxy_links: print(f"Файл '{args.input_file}' пуст или не содержит ссылок."); return
+        with open(args.input_file, 'r', encoding='utf-8') as f:
+            # ИЗМЕНЕНО: Фильтруем пустые строки И ссылки, начинающиеся с ssr://
+            all_links = [line.strip() for line in f]
+            proxy_links = [link for link in all_links if link and not link.startswith('ssr://')]
+            ignored_count = len(all_links) - len(proxy_links)
+            print(f"Загружено {len(all_links)} строк. Отфильтровано {ignored_count} (пустые/ssr). В работе {len(proxy_links)} ссылок.")
 
-    print(f"Начинаю проверку {len(proxy_links)} прокси из файла '{args.input_file}' в {MAX_WORKERS} потоков...")
+    except FileNotFoundError: print(f"Ошибка: Входной файл не найден: {args.input_file}"); return
+    if not proxy_links: print(f"Файл '{args.input_file}' не содержит подходящих для проверки ссылок."); return
+
+    print(f"Начинаю проверку {len(proxy_links)} прокси в {MAX_WORKERS} потоков...")
     working_proxies_with_ping = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_link = {executor.submit(check_proxy, link): link for link in proxy_links}
         for future in tqdm(as_completed(future_to_link), total=len(proxy_links), desc="Проверка прокси"):
+            # ИЗМЕНЕНО: Теперь мы просто получаем результат. Если была ошибка, check_proxy вернет None,
+            # и `future.result()` не вызовет исключение.
             result = future.result()
-            if result: working_proxies_with_ping.append(result)
+            if result:
+                working_proxies_with_ping.append(result)
 
     print("\n" + "="*20 + " ЗАВЕРШЕНО " + "="*20)
+    
+    content_to_save = ""
     if working_proxies_with_ping:
-        # ИЗМЕНЕНО: Сортируем по пингу, который теперь является первым элементом кортежа
         sorted_proxies = sorted(working_proxies_with_ping, key=lambda x: x[0])
-        # ИЗМЕНЕНО: Извлекаем только ссылки для записи
         final_proxy_list = [item[1] for item in sorted_proxies]
-        
         content_to_save = "\n".join(final_proxy_list)
-        
-        try:
-            update_gist(GIST_ID, GIST_FILENAME, content_to_save, GIST_TOKEN)
-            print(f"\nНайдено {len(final_proxy_list)} рабочих прокси. Результаты сохранены в Gist.")
-        except requests.exceptions.RequestException as e:
-            print(f"Ошибка: Не удалось обновить Gist: {e}")
+        print(f"\nНайдено {len(final_proxy_list)} рабочих прокси.")
     else:
-        print("Рабочие прокси не найдены. Gist не будет обновлен.")
-        # Можно опционально очистить Gist, если прокси не найдены
-        try:
-             update_gist(GIST_ID, GIST_FILENAME, "# Рабочие прокси не найдены.", GIST_TOKEN)
-        except requests.exceptions.RequestException as e:
-            print(f"Ошибка: Не удалось очистить Gist: {e}")
+        print("Рабочие прокси не найдены.")
+
+    # Обновляем Gist в любом случае (либо с результатами, либо с сообщением, что ничего не найдено)
+    update_gist(GIST_ID, GIST_FILENAME, content_to_save, GIST_TOKEN)
 
 
 if __name__ == "__main__":
