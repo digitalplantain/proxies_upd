@@ -11,8 +11,9 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from tqdm import tqdm
+import sys # Импортируем sys для отладки
 
-# ... (весь ваш код с GEMINI_ALLOWED_COUNTRY_CODES до TARGETS остается без изменений) ...
+# ... (GEMINI_ALLOWED_COUNTRY_CODES и YT_MUSIC_ALLOWED_COUNTRY_CODES без изменений) ...
 GEMINI_ALLOWED_COUNTRY_CODES = {
     'AL', 'DZ', 'AS', 'AO', 'AI', 'AQ', 'AG', 'AR', 'AM', 'AW', 'AU', 'AT', 'AZ', 
     'BS', 'BH', 'BD', 'BB', 'BE', 'BZ', 'BJ', 'BM', 'BT', 'BO', 'BA', 'BW', 'BR', 
@@ -46,8 +47,10 @@ YT_MUSIC_ALLOWED_COUNTRY_CODES = {
 }
 
 XRAY_PATH = "./xray"
-MAX_WORKERS = 200
-REQUEST_TIMEOUT = 8
+MAX_WORKERS = 100
+# ИЗМЕНЕНО: Увеличиваем таймауты
+REQUEST_TIMEOUT = 15 # Таймаут запроса через прокси
+XRAY_STARTUP_TIME = 2.5 # Время на запуск xray
 
 TARGETS = {
     "ping_url": "http://cp.cloudflare.com/",
@@ -55,6 +58,7 @@ TARGETS = {
     "discord_url": "https://discord.com/api/v9/gateway",
 }
 
+# ... (get_free_port, country_code_to_flag, generate_xray_config, parse_proxy_link без изменений) ...
 def get_free_port():
     """Находит свободный TCP порт для локального прокси."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -122,10 +126,8 @@ def parse_proxy_link(link):
         # Любая ошибка парсинга (включая b64decode, split и т.д.) приведет к отбраковке ссылки
         return None
 
-def check_proxy(proxy_link):
+def check_proxy(proxy_link, debug_mode=False):
     """Основная функция проверки одного прокси. Отказоустойчивая."""
-    # ИЗМЕНЕНО: Оборачиваем всю функцию в try...except для максимальной надежности.
-    # Любая ошибка (парсинг, генерация конфига, сеть) будет поймана.
     proc = None
     config_path = None
     try:
@@ -140,9 +142,15 @@ def check_proxy(proxy_link):
             temp_config.write(config_json)
             config_path = temp_config.name
         
-        proc = subprocess.Popen([XRAY_PATH, "run", "-c", config_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5)
-        if proc.poll() is not None: return None
+        # ИЗМЕНЕНО: Включаем логирование xray в режиме отладки
+        stdout_pipe = sys.stdout if debug_mode else subprocess.DEVNULL
+        stderr_pipe = sys.stderr if debug_mode else subprocess.DEVNULL
+        proc = subprocess.Popen([XRAY_PATH, "run", "-c", config_path], stdout=stdout_pipe, stderr=stderr_pipe)
+        
+        time.sleep(XRAY_STARTUP_TIME) # Используем новую переменную
+        if proc.poll() is not None: 
+            if debug_mode: print(f"[DEBUG] Xray не смог запуститься для {proxy_link[:30]}...")
+            return None
 
         proxies = {'http': f'socks5://127.0.0.1:{local_port}', 'https': f'socks5://127.0.0.1:{local_port}'}
         
@@ -165,7 +173,9 @@ def check_proxy(proxy_link):
             pass
 
         real_flag = country_code_to_flag(country_code)
-        name = (f"{ping:04d}ms ◈ {real_flag} {country_code} ◈ {isp} | "
+        # Добавляем тип сети в имя для наглядности
+        net_type = proxy_data.get('net', proxy_data.get('type', 'tcp'))
+        name = (f"{ping:04d}ms ◈ {net_type.upper()} ◈ {real_flag} {country_code} ◈ {isp} | "
                 f"Discord {'✅' if discord_ok else '❌'} | "
                 f"YT_Music {'✅' if yt_music_ok else '❌'} | "
                 f"Gemini {'✅' if gemini_ok else '❌'}")
@@ -175,15 +185,14 @@ def check_proxy(proxy_link):
 
         return (ping, final_link_with_new_name)
     except Exception as e:
-        # При любой ошибке просто возвращаем None, чтобы поток продолжил работу.
-        # Для отладки в GitHub Actions можно раскомментировать следующую строку:
-        # print(f"\n[DEBUG] Ошибка в check_proxy для '{proxy_link[:30]}...': {e}")
+        if debug_mode:
+            print(f"\n[DEBUG] Ошибка в check_proxy для '{proxy_link[:40]}...': {e}")
         return None
     finally:
         if proc: proc.terminate(); proc.wait()
         if config_path and os.path.exists(config_path): os.remove(config_path)
 
-
+# ... (update_gist без изменений) ...
 def update_gist(gist_id, gist_filename, content, token):
     """Обновляет файл в указанном секретном Gist."""
     headers = {
@@ -208,9 +217,12 @@ def update_gist(gist_id, gist_filename, content, token):
         if e.response is not None:
             print(f"Ответ от API: {e.response.text}")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Проверяет список прокси и обновляет Gist.", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("input_file", help="Файл со списком прокси-ссылок (каждая на новой строке).")
+    # ИЗМЕНЕНО: Добавляем флаг для отладки
+    parser.add_argument("--debug", action="store_true", help="Включить режим отладки с подробным выводом.")
     args = parser.parse_args()
     
     GIST_ID = os.environ.get('GIST_ID')
@@ -218,29 +230,50 @@ def main():
     GIST_FILENAME = os.environ.get('GIST_FILENAME', 'working_proxies.txt')
 
     if not all([GIST_ID, GIST_TOKEN]):
-        print("Ошибка: Переменные окружения GIST_ID и GIST_TOKEN должны быть установлены.")
-        return
+        print("Ошибка: Переменные окружения GIST_ID и GIST_TOKEN должны быть установлены для обновления Gist.")
+        # Не выходим, если запускаем в локальной отладке
+        if not args.debug:
+            return
 
     if not os.path.exists(XRAY_PATH):
         print(f"Ошибка: Не найден исполняемый файл Xray по пути: {XRAY_PATH}"); return
     try:
         with open(args.input_file, 'r', encoding='utf-8') as f:
-            # ИЗМЕНЕНО: Фильтруем пустые строки И ссылки, начинающиеся с ssr://
-            all_links = [line.strip() for line in f]
-            proxy_links = [link for link in all_links if link and not link.startswith('ssr://')]
-            ignored_count = len(all_links) - len(proxy_links)
-            print(f"Загружено {len(all_links)} строк. Отфильтровано {ignored_count} (пустые/ssr). В работе {len(proxy_links)} ссылок.")
+            all_links = [line.strip() for line in f if line.strip() and not line.startswith('ssr://')]
+        
+        # ИЗМЕНЕНО: Новая логика фильтрации
+        print(f"Загружено {len(all_links)} подходящих ссылок. Начинаем фильтрацию для среды GitHub Actions...")
+        
+        filtered_links = []
+        for link in all_links:
+            # Делаем "легкий" парсинг, чтобы определить тип прокси
+            # Интересуют только Vmess/Vless с WebSocket (ws) и TLS
+            if link.startswith('vmess://'):
+                try:
+                    data = json.loads(base64.b64decode(link[8:]).decode('utf-8'))
+                    if data.get('net') == 'ws' and data.get('tls') in ['tls', '']: # Некоторые не указывают tls, но он подразумевается с ws
+                         filtered_links.append(link)
+                except:
+                    continue
+            elif link.startswith(('vless://', 'trojan://')):
+                 if 'network=ws' in link and 'security=tls' in link:
+                     filtered_links.append(link)
+
+        print(f"После фильтрации осталось {len(filtered_links)} прокси (тип WS+TLS), которые с наибольшей вероятностью заработают.")
+        proxy_links = filtered_links
 
     except FileNotFoundError: print(f"Ошибка: Входной файл не найден: {args.input_file}"); return
-    if not proxy_links: print(f"Файл '{args.input_file}' не содержит подходящих для проверки ссылок."); return
+    if not proxy_links: 
+        print(f"Не найдено прокси типа WS+TLS для проверки."); 
+        if all([GIST_ID, GIST_TOKEN]):
+             update_gist(GIST_ID, GIST_FILENAME, "# Не найдено подходящих прокси (WS+TLS) для проверки.", GIST_TOKEN)
+        return
 
     print(f"Начинаю проверку {len(proxy_links)} прокси в {MAX_WORKERS} потоков...")
     working_proxies_with_ping = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_link = {executor.submit(check_proxy, link): link for link in proxy_links}
+        future_to_link = {executor.submit(check_proxy, link, args.debug): link for link in proxy_links}
         for future in tqdm(as_completed(future_to_link), total=len(proxy_links), desc="Проверка прокси"):
-            # ИЗМЕНЕНО: Теперь мы просто получаем результат. Если была ошибка, check_proxy вернет None,
-            # и `future.result()` не вызовет исключение.
             result = future.result()
             if result:
                 working_proxies_with_ping.append(result)
@@ -255,10 +288,11 @@ def main():
         print(f"\nНайдено {len(final_proxy_list)} рабочих прокси.")
     else:
         print("Рабочие прокси не найдены.")
-
-    # Обновляем Gist в любом случае (либо с результатами, либо с сообщением, что ничего не найдено)
-    update_gist(GIST_ID, GIST_FILENAME, content_to_save, GIST_TOKEN)
-
+    
+    if all([GIST_ID, GIST_TOKEN]):
+        update_gist(GIST_ID, GIST_FILENAME, content_to_save, GIST_TOKEN)
+    else:
+        print("Gist не обновлен (отсутствуют GIST_ID/GIST_TOKEN).")
 
 if __name__ == "__main__":
     main()
