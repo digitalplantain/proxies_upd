@@ -9,7 +9,7 @@ on:
 
 env:
   # URL со списком прокси для проверки. Замените на свой!
-  PROXY_LIST_URL: "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt"
+  PROXY_LIST_URL: "https://raw.githubusercontent.com/digitalplantain/proxies_upd/refs/heads/main/sub.txt"
   # Имя файла, который будет создан в Gist
   GIST_FILENAME: "working_proxies.txt"
 
@@ -51,4 +51,4 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_FILENAME: ${{ env.GIST_FILENAME }}
-        run: python proxy_checker.py proxies.txt --debug
+        run: python proxy_checker.py proxies.txt
