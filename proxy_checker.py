@@ -46,7 +46,7 @@ YT_MUSIC_ALLOWED_COUNTRY_CODES = {
 }
 
 XRAY_PATH = "./xray" # ИЗМЕНЕНО: убрали .exe, так как в Actions будет Linux
-MAX_WORKERS = 100
+MAX_WORKERS = 200
 REQUEST_TIMEOUT = 8
 
 TARGETS = {
