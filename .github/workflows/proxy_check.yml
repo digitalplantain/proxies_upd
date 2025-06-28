@@ -35,10 +35,15 @@ jobs:
 
       - name: 4. Download and setup Xray-core
         run: |
+          # Скачиваем последнюю версию Xray для linux-64
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip xray
+          # Распаковываем ВЕСЬ архив в текущую директорию
+          unzip xray.zip
+          # Делаем исполняемым только сам xray
           chmod +x ./xray
-          echo "Xray-core downloaded and ready."
+          # (Опционально) Показываем, какие файлы появились
+          ls -l
+          echo "Xray-core, geoip.dat, and geosite.dat are ready."
 
       - name: 5. Download proxy list
         run: |
